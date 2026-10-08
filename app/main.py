@@ -1,3 +1,8 @@
+import torch
+from torchvision import transforms
+from PIL import Image
+from fastapi import UploadFile, File
+from app.classifier_model import CIFAR10CNN
 from typing import Union
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -5,6 +10,42 @@ from app.bigram_model import BigramModel
 import spacy
 
 app = FastAPI()
+device = (
+    torch.device("mps")
+    if torch.backends.mps.is_available()
+    else torch.device("cuda")
+    if torch.cuda.is_available()
+    else torch.device("cpu")
+)
+
+classifier = CIFAR10CNN().to(device)
+
+classifier.load_state_dict(
+    torch.load(
+        "cifar10_classifier.pth",
+        map_location=device
+    )
+)
+
+classifier.eval()
+
+cifar10_classes = [
+    "airplane",
+    "automobile",
+    "bird",
+    "cat",
+    "deer",
+    "dog",
+    "frog",
+    "horse",
+    "ship",
+    "truck"
+]
+
+classifier_transform = transforms.Compose([
+    transforms.Resize((32, 32)),
+    transforms.ToTensor()
+])
 nlp = spacy.load("en_core_web_lg")
 
 # Sample corpus for the bigram model
@@ -48,4 +89,27 @@ def get_embedding(word: str):
     return {
         "word": word,
         "embedding": embedding.tolist()
+    }
+
+@app.post("/classify")
+async def classify_image(file: UploadFile = File(...)):
+    image = Image.open(file.file).convert("RGB")
+
+    image_tensor = classifier_transform(image)
+    image_tensor = image_tensor.unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        outputs = classifier(image_tensor)
+
+        _, predicted = torch.max(
+            outputs,
+            1
+        )
+
+    predicted_class = cifar10_classes[
+        predicted.item()
+    ]
+
+    return {
+        "predicted_class": predicted_class
     }
