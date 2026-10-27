@@ -8,6 +8,11 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from app.bigram_model import BigramModel
 import spacy
+import io
+from fastapi.responses import StreamingResponse
+from helper_lib.model import get_model
+from torchvision.utils import make_grid
+
 
 app = FastAPI()
 device = (
@@ -58,6 +63,20 @@ corpus = [
 ]
 
 bigram_model = BigramModel(corpus)
+
+
+# Load trained GAN Generator
+gan_model = get_model("GAN").to(device)
+
+gan_model.generator.load_state_dict(
+    torch.load(
+        "models/gan_generator.pth",
+        map_location=device,
+        weights_only=True
+    )
+)
+
+gan_model.generator.eval()
 
 
 class TextGenerationRequest(BaseModel):
@@ -113,3 +132,40 @@ async def classify_image(file: UploadFile = File(...)):
     return {
         "predicted_class": predicted_class
     }
+
+
+# Generate handwritten digit images using GAN
+@app.get("/generate-gan")
+def generate_gan(count: int = 16):
+    if count < 1 or count > 64:
+        return {"error": "count must be between 1 and 64"}
+
+    gan_model.generator.eval()
+
+    noise = torch.randn(
+        count, 100, device=device
+    )
+
+    with torch.no_grad():
+        generated_images = gan_model.generator(noise)
+
+    # Normalize images from [-1, 1] to [0, 1]
+    generated_images = (generated_images + 1) / 2
+
+    # Create a grid of generated digit images
+    grid = make_grid(
+        generated_images.cpu(),
+        nrow=4,
+        padding=2
+    )
+
+    image = transforms.ToPILImage()(grid)
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="image/png"
+    )
